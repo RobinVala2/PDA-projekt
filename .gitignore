@@ -1,0 +1,13 @@
+.idea/
+venv/
+Q-table_solutions_4x4_False
+Q-table_solutions_4x4_True
+Q-table_solutions_8x8_False
+Q-table_solutions_8x8_True
+Q-table_solutions_4x4_True_penalization
+Q-table_solutions_8x8_True_penalization
+GA_solutions_slippery_False_4x4
+GA_solutions_slippery_False_8x8
+GA_solutions_slippery_True_4x4
+GA_solutions_slippery_True_8x8
+.DS_Store

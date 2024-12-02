@@ -1,0 +1,6 @@
+gymnasium==1.0.0
+matplotlib==3.9.2
+numpy==2.1.2
+pillow==10.4.0
+pyparsing==3.2.0
+pygame==2.6.1
