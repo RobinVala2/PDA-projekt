@@ -7,43 +7,50 @@ import argparse
 from collections import deque
 import imageio
 
+
 def environment_setup(map_name, is_slippery, render_mode=None):
     environment = gym.make("FrozenLake-v1", map_name=map_name, is_slippery=is_slippery, render_mode=render_mode)
     return environment
+
 
 def initialize_q_table(state_space, action_space):
     q_table = np.zeros((state_space, action_space))
     return q_table
 
+
 def load_q_table(map_name, path):
     with open(f"{path}/frozen_lake{map_name}.pkl", "rb") as f:
         return pickle.load(f)
 
+
 def choose_action(epsilon, action_space, q_table, state):
-    if np.random.random() < epsilon:    # Exploration
+    if np.random.random() < epsilon:  # Exploration
         return action_space.sample()
-    else:                               # Exploitation
+    else:  # Exploitation
         return np.argmax(q_table[state, :])
 
 
-def apply_penalty(state, new_state, step, last_states, penalty_settings, state_space,  visited_states, action_info, action, difference_indexes):
+def apply_penalty(new_state, step, penalty_settings, action_info, action, difference_indexes, previous_state, environment):
     reward = 0
+
+    # Penalty for step into the hole
+    if environment.unwrapped.desc.flatten()[new_state] == b'H':
+        reward -= penalty_settings['hole_penalty']
+
     # Slippery is not an AGENT fault, do not penalize when occur
     if step not in difference_indexes:  # AGENT executed intended ACTION
-        #Penalty for repeated visits to the state
-        if state in visited_states:
-            reward -= penalty_settings['revisit_penalty']
-        # Penalty for returning to the field visited in the last 6 steps
-        if new_state in last_states:
-            reward -= penalty_settings['recent_visit_penalty']
+
+        # PROBLEMATIC, HOW EFFECTIVELY AND NOT TO KILL THE RL ALGORITHM ...
         # Penalties for repeating actions (cyclical behaviour)
-        if len(action_info) > 2 and action == action_info[-1] == action_info[-3]:       # -1 ... last record
-            reward -= penalty_settings['cyclic_action_penalty']
+        #if len(action_info) > 10 and action == action_info[-1] == action_info[-3]:  # -1 ... last record
+        #   reward -= penalty_settings['cyclic_action_penalty']
+
         # Penalties for steps used beyond treshold
         if step >= penalty_settings['step_limit']:
             reward -= penalty_settings['step_penalty']
+
         # Penalty for attempting to move off the map
-        if new_state < 0 or new_state >= state_space:
+        if new_state == previous_state:
             reward -= penalty_settings['out_of_bounds_penalty']
 
     return reward
@@ -64,17 +71,18 @@ def normalize_q_table(q_table):
 
 # Identify the executed slippery ACTION
 def classify_move(new_state, previous_state, action):
-    move = new_state - previous_state       # Get value of tiles moved by AGENT
-    if move in(-4, -8):
-        return 3    # up
+    move = new_state - previous_state  # Get value of tiles moved by AGENT
+    if move in (-4, -8):
+        return 3  # up
     elif move == 1:
-        return 2    # right
-    elif move in(4, 8):
-        return 1    # down
+        return 2  # right
+    elif move in (4, 8):
+        return 1  # down
     elif move == -1:
-        return 0    # left
+        return 0  # left
     elif move == 0:
-        return int(action)      #agent expected (generated) action
+        return int(action)  # agent expected (generated) action
+
 
 # Compare two lists of ACTIONs
 def find_list_differences(action_info, real_moves_due_to_slip):
@@ -85,6 +93,7 @@ def find_list_differences(action_info, real_moves_due_to_slip):
     difference_count = len(difference_indexes)
 
     return difference_count, difference_indexes
+
 
 def run_agent(episodes, training, map_name, is_slippery):
     output_folder = f"Q-table_solutions_{map_name}_{is_slippery}_penalization"
@@ -107,7 +116,7 @@ def run_agent(episodes, training, map_name, is_slippery):
                 file_path = os.path.join(output_folder, file)
                 if os.path.isfile(file_path):
                     os.remove(file_path)
-        
+
         q_table = initialize_q_table(state_space, action_space.n)
 
         # Q-learning parameters
@@ -125,35 +134,35 @@ def run_agent(episodes, training, map_name, is_slippery):
 
         # Penalty parameters
         penalty_settings = {
-            'revisit_penalty': 2,
-            'recent_visit_penalty': 2,
-            'step_penalty': 0.01,
-            'out_of_bounds_penalty': 5,
-            'cyclic_action_penalty': 3,
-            'step_limit': 10
+            'revisit_penalty': 0.005,
+            'recent_visit_penalty': 0.005,
+            'step_penalty': 0.001,
+            'out_of_bounds_penalty': 4,
+            'cyclic_action_penalty': 0.005,
+            'step_limit': 20,
+            'hole_penalty': 4,
         }
-
 
         for episode in range(episodes):
             epsilon = max(epsilon - epsilon_decay, min_epsilon)
             state = environment.reset()[0]
-            
+
             done = False
             truncated = False
 
             # Penalty structures
             visited_states = set()
-            last_states = deque(maxlen=6)   # Keep track of the last 6 STATEs
+            last_states = deque(maxlen=6)  # Keep track of the last 6 STATEs
 
             # Slippery structures
-            slip_infos = []                 # Store info about occurring slips
-            action_info = []                # Store AGENT intended ACTIONs
-            real_moves_due_to_slip = []     # Store executed ACTIONs towards ENVIRONMENT
+            slip_infos = []  # Store info about occurring slips
+            action_info = []  # Store AGENT intended ACTIONs
+            real_moves_due_to_slip = []  # Store executed ACTIONs towards ENVIRONMENT
 
             for step in range(max_steps_per_episode):
                 action = choose_action(epsilon, action_space, q_table, state)
-                previous_state = state                  # Store the initial STATE before the ACTION (step)
-                action_info.append(int(action))         # Store the AGENT intended ACTIONs
+                previous_state = state  # Store the initial STATE before the ACTION (step)
+                action_info.append(int(action))  # Store the AGENT intended ACTIONs
                 new_state, reward, done, truncated, _ = environment.step(action)
 
                 # Move classification
@@ -168,18 +177,19 @@ def run_agent(episodes, training, map_name, is_slippery):
                     slip_info = f"Slip detected: Episode {episode}, Step {step}, Previous State: {previous_state}, New State: {new_state}, Action Taken: {action}"
                     slip_infos.append(slip_info)
 
+                goal_state = environment.unwrapped.desc.flatten().tolist().index(b'G')
+
                 # Apply penalties
-                penalty = apply_penalty(state, new_state, step, last_states, penalty_settings, state_space,  visited_states, action_info, action, difference_indexes)
+                penalty = apply_penalty(new_state, step, penalty_settings, action_info, action, difference_indexes, previous_state, environment)
                 reward += penalty
 
                 q_table[state][action] = q_table[state][action] + learning_rate * (
-                            reward + discount_factor * np.max(q_table[new_state]) - q_table[state][action])
+                        reward + discount_factor * np.max(q_table[new_state]) - q_table[state][action])
 
                 # Update state tracking
                 visited_states.add(state)
                 last_states.append(state)
                 state = new_state
-
 
                 if done or truncated:
                     break
@@ -187,7 +197,6 @@ def run_agent(episodes, training, map_name, is_slippery):
             episode_steps[episode] = step
             episode_rating[episode] = reward
             ep_slip[episode] = int(len(slip_infos))
-            
 
             if done and environment.unwrapped.desc.flatten()[state] == b'G':
                 reward = 1.0
@@ -200,10 +209,10 @@ def run_agent(episodes, training, map_name, is_slippery):
                 print(f"Agent expected action: {action_info}, step count: {len(action_info)}.")
                 print(f"Agent executed action due slippery: {real_moves_due_to_slip}, slip count: {difference_count}. ")
                 print(f"Success! Reached the goal in episode {episode}.", flush=True)
-                print("Current Q-table: \n" + np.array2string(q_table, formatter={'float_kind': lambda x: f"{x:.10f}"}) + "\n")
+                print("Current Q-table: \n" + np.array2string(q_table,
+                                                              formatter={'float_kind': lambda x: f"{x:.10f}"}) + "\n")
                 episode_rewards[episode] = 1
 
-                
                 # Normalize Q-table, get rid of negative values
                 # Sigmoid not that effective (slow, demanding, ...)
                 q_table = normalize_q_table(q_table)
@@ -212,11 +221,9 @@ def run_agent(episodes, training, map_name, is_slippery):
                 with open(q_table_filename, "w") as f:
                     f.write(np.array2string(q_table, formatter={'float_kind': lambda x: f"{x:.10f}"}))
 
-
         environment.close()
 
         sum_rewards = np.zeros(episodes)
-
 
         for episode in range(episodes):
             sum_rewards[episode] = np.sum(episode_rewards[max(0, episode - 100):(episode + 1)])
@@ -224,8 +231,8 @@ def run_agent(episodes, training, map_name, is_slippery):
         plt.figure(figsize=(12, 8))
         plt.subplot(3, 1, 1)
         plt.plot(episode_rating)
-        plt.title("Rating per Episode") 
-        plt.xlabel("Episode") 
+        plt.title("Rating per Episode")
+        plt.xlabel("Episode")
         plt.ylabel("Rewards")
         plt.grid()
 
@@ -238,15 +245,14 @@ def run_agent(episodes, training, map_name, is_slippery):
 
         plt.subplot(3, 1, 3)
         plt.plot(ep_slip)
-        plt.title("Slips per Episode") 
+        plt.title("Slips per Episode")
         plt.xlabel("Episode")
-        plt.ylabel("Slips") 
+        plt.ylabel("Slips")
         plt.grid()
 
         plt.tight_layout()
         plt.savefig(f'{output_folder}/frozen_lake_episode{map_name}.png')
         plt.show()
-
 
         f = open(f"{output_folder}/frozen_lake{map_name}.pkl", "wb")
         pickle.dump(q_table, f)
@@ -257,12 +263,14 @@ def run_agent(episodes, training, map_name, is_slippery):
             f.write(np.array2string(q_table, formatter={'float_kind': lambda x: f"{x:.10f}"}))
 
         return q_table, episode_rewards
-        
+
     elif not training:
         q_table = load_q_table(map_name, output_folder)
+        q_table = normalize_q_table(q_table)
+
         print("Current Q-table:")
         print(np.array2string(q_table, formatter={'float_kind': lambda x: f"{x:.10f}"}))
-        
+
         successful_episodes = 0
         best_steps = float("inf")
 
@@ -290,7 +298,7 @@ def run_agent(episodes, training, map_name, is_slippery):
                 # Capture each frame for GIF generation
                 if isinstance(frame, np.ndarray) and frame.ndim == 3:
                     frames.append(frame)
-                
+
                 state = new_state
                 steps += 1
 
@@ -310,7 +318,7 @@ def run_agent(episodes, training, map_name, is_slippery):
                     print(f"Skipped episode {episode} with number of steps: {steps}")
             else:
                 print(f"Episode {episode} ended without reaching the goal. Steps: {steps}")
-        
+
         # Display results
         success_rate = (successful_episodes / episodes) * 100
         print("\nResults of Evaluation:")
@@ -323,10 +331,9 @@ def run_agent(episodes, training, map_name, is_slippery):
 
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser(description="Frozen Lake Q-learning agent.")
 
-    parser.add_argument('--episodes', type=int, default=2000, help='Number of episodes for training or testing')
+    parser.add_argument('--episodes', type=int, default=1000, help='Number of episodes for training or testing')
     parser.add_argument('--training', type=lambda x: (str(x).lower() == 'true'), default=True,
                         help='Training mode: True or False (default: True)')
     parser.add_argument('--map_name', type=str, default='4x4',
@@ -341,7 +348,7 @@ if __name__ == '__main__':
     '''
         How to run:
         Train the agent on 8x8 map, slippery True: python q_table_run-penalization.py --episodes 10000 --training True --map_name "8x8" --is_slippery True
-        Show the results of the training on 8x8 map, slippery True:  python q_table_run-penalization.py --episodes 1000 --training False --map_name "8x8" --is_slippery True
+        Show the results of the training on 8x8 map, slippery True:  python q_table_run-penalization.py --episodes 10000 --training False --map_name "8x8" --is_slippery True
         Train the agent on 4x4 map, slippery True: python q_table_run-penalization.py --episodes 10000 --training True --map_name "4x4" --is_slippery True
-        Show the results of the training on 4x4 map, slippery True:  python q_table_run-penalization.py --episodes 1000 --training False --map_name "4x4" --is_slippery True
+        Show the results of the training on 4x4 map, slippery True:  python q_table_run-penalization.py --episodes 10000 --training False --map_name "4x4" --is_slippery True
     '''
